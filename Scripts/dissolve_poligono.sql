@@ -10,9 +10,12 @@ values
 
 
 -- Criando a tabela onde os dados serão dissolvidos
-DROP TABLE monitoramento_dissolve;
+--DROP TABLE CASCADE monitoramento_dissolve;
 
-CREATE TABLE monitoramento_dissolve1 AS
+-- Deletando os registros da tabela
+--DELETE FROM monitoramento_dissolve;
+
+CREATE TABLE monitoramento_dissolve AS
 SELECT (select unnest(array_agg(m2.object_id)) as id_array2 order by id_array2 limit 1) AS id,
 		round((st_area(st_transform(geom, 55555))/10000)::NUMERIC, 2) AS area_ha, t1.class_name, view_date, geom  
 FROM (
@@ -37,9 +40,10 @@ CREATE INDEX monitoramento_dissolve_geom_idx
   USING GIST (geom);
 
 ----------------------------------------------------------------------------------------------------------------
--- Criando a tabela de log no schema terraamazon que registrará as modificações na tabela monitoramento
+DROP TABLE public.log_monitoramento;
+ -- Criando a tabela de log no schema terraamazon que registrará as modificações na tabela monitoramento
 CREATE TABLE IF NOT EXISTS public.log_monitoramento (
-              id                      	int PRIMARY KEY,
+              id                      	SERIAL PRIMARY KEY,
               data_hora_utc           	timestamp WITH time ZONE DEFAULT now(),
               monitoramento_dissolve_id int,
               monitoramento_object_id   int,
@@ -55,21 +59,134 @@ AS
 $$
 DECLARE
     f_tg_op            constant text    := substring(tg_op, 1, 1);
+	-- Esta é a lógica de como gravar os dados no log
 
-    monitoramento_dissolve_id   int     := CASE WHEN f_tg_op = 'D' THEN 	
-    												 (SELECT md.id
-													 FROM monitoramento_dissolve md
-													 WHERE st_intersects(st_pointonsurface(OLD.spatial_data), md.geom)
-													 LIMIT 1)
-										   WHEN f_tg_op = 'I' THEN
-													(SELECT md.id
-													FROM monitoramento_dissolve md
-													WHERE st_intersects(st_pointonsurface(NEW.spatial_data), md.geom)
-													LIMIT 1)
-        								   END;
-   monitoramento_object_id   int     := CASE WHEN f_tg_op = 'I' THEN 	
-													(SELECT NEW.object_id)
-										END;
+	--x = inseriu/deletou na tabela
+	                                        
+	---------------------------------------------------------------------
+	-- monitoramento_dissolve_id |  monitoramento_object_id  | operacao |
+	---------------------------------------------------------------------
+	--           NULL            |             X             |    I     | --> Poligono inserido não dissolvido (totalmente novo).
+	---------------------------------------------------------------------
+	--            X              |            NULL           |    I     | --> Caso inexistente.
+	---------------------------------------------------------------------
+	--            X              |             X             |    I     | --> Poligono monitoramento e monitoramento_dissolvido modificado.
+	---------------------------------------------------------------------
+	--           NULL            |            NULL           |    I     | --> Caso inexistente. Poligono inexistente (nunca foi feito nunca pode ser dissolvido)
+	---------------------------------------------------------------------
+	---------------------------------------------------------------------
+	--           NULL            |             X             |    D     | --> Poligono deletado que não foi dissolvido (criou e apagou antes de dissolver)
+	---------------------------------------------------------------------
+	--            X              |            NULL           |    D     | --> Caso inexistente. Poligono inexistente (nunca foi feito num pode ser deletado)
+	---------------------------------------------------------------------
+	--            X              |             X             |    D     | --> Poligono deletado dissolvido (mas a trigger não representa esta caso na tabela log) --> Mudar a trigger do log. Não esta gravando desta maneira quando deletar (ctrl+X) em monitoramento. 
+	---------------------------------------------------------------------
+	--           NULL            |            NULL           |    D     | --> Caso inexistente, mas esta registrado no log atualmente. Tem um erro aqui no log.
+	---------------------------------------------------------------------
+	---------------------------------------------------------------------
+	--           NULL            |             X             |    U     | --> Poligono que foi classificado e reclassificado antes de dissolver 
+	---------------------------------------------------------------------
+	--            X              |            NULL           |    U     | --> Caso inexistente 
+	---------------------------------------------------------------------
+	--            X              |             X             |    U     | --> Poligono que mudou de classe que já dissolvido 
+	---------------------------------------------------------------------
+	--           NULL            |            NULL           |    U     | --> Não faz update em poligono inexistente
+	---------------------------------------------------------------------
+    monitoramento_dissolve_id int :=  
+    	CASE 
+		    WHEN f_tg_op = 'D' THEN
+		    	-- dissolve |monitor|
+		    	-----------------------------
+				--    NULL  |   X   |   D   | --> Poligono deletado que não foi dissolvido (criou e apagou antes de dissolver)
+				-----------------------------
+				--      X   |   X   |   D   | --> Poligono deletado dissolvido (mas a trigger não representa esta caso na tabela log) --> Mudar a trigger do log. Não esta gravando desta maneira quando deletar (ctrl+X) em monitoramento.
+		        -----------------------------
+		    
+		    	-----------------------------
+				--    NULL  |  OLD  |   D   | 
+				-----------------------------
+				--    X     |  OLD  |   D   | 
+		        -----------------------------
+				 (SELECT md.id
+				 FROM monitoramento_dissolve md
+				 WHERE st_intersects(st_pointonsurface(OLD.spatial_data), md.geom)
+				 LIMIT 1)
+			WHEN f_tg_op = 'I' THEN
+		    	-- dissolve |monitor|
+				-----------------------------
+				--   NULL   |   X   |   I   | --> Poligono inserido não dissolvido (totalmente novo).
+				-----------------------------
+				--    X     |   X   |   I   | --> Poligono monitoramento e monitoramento_dissolvido modificado.
+				-----------------------------
+				-----------------------------
+				--   NULL   |  NEW  |   I   | 
+				-----------------------------
+				--    X     |  NEW  |   I   | 
+				-----------------------------
+				(SELECT md.id
+				FROM monitoramento_dissolve md
+				WHERE st_intersects(st_pointonsurface(NEW.spatial_data), md.geom)
+				LIMIT 1)
+			WHEN f_tg_op = 'U' THEN
+				-- dissolve|monitor|
+				----------------------------
+				--  NULL   |   X   |   U   | --> Poligono que foi classificado e reclassificado antes de dissolver 
+				----------------------------
+				--   X     |   X   |   U   | --> Poligono que mudou de classe que já dissolvido 
+				----------------------------
+				----------------------------
+				--  NULL   |  NEW  |   U   | --> Poligono que foi classificado e reclassificado antes de dissolver 
+				----------------------------
+				--   X     |  NEW  |   U   | --> Poligono que mudou de classe que já dissolvido 
+				----------------------------
+				(SELECT md.id
+				FROM monitoramento_dissolve md
+				WHERE st_intersects(st_pointonsurface(NEW.spatial_data), md.geom)
+				LIMIT 1)
+		END;
+   monitoramento_object_id int := 
+   		CASE
+	   		WHEN f_tg_op = 'D' THEN
+		    	-- dissolve |monitor|
+		    	-----------------------------
+				--    NULL  |   X   |   D   | --> Poligono deletado que não foi dissolvido (criou e apagou antes de dissolver)
+				-----------------------------
+				--      X   |   X   |   D   | --> Poligono deletado dissolvido (mas a trigger não representa esta caso na tabela log) --> Mudar a trigger do log. Não esta gravando desta maneira quando deletar (ctrl+X) em monitoramento.
+		        -----------------------------
+		    
+		    	-----------------------------
+				--    NULL  |  OLD  |   D   | 
+				-----------------------------
+				--    X     |  OLD  |   D   | 
+		        -----------------------------
+				(SELECT OLD.object_id)
+	   		WHEN f_tg_op = 'I' THEN
+		    	-- dissolve |monitor|
+				-----------------------------
+				--   NULL   |   X   |   I   | --> Poligono inserido não dissolvido (totalmente novo).
+				-----------------------------
+				--    X     |   X   |   I   | --> Poligono monitoramento e monitoramento_dissolvido modificado.
+				-----------------------------
+				-----------------------------
+				--   NULL   |  NEW  |   I   | 
+				-----------------------------
+				--    X     |  NEW  |   I   | 
+				-----------------------------
+				(SELECT NEW.object_id)
+	   		WHEN f_tg_op = 'U' THEN
+				-- dissolve|monitor|
+				----------------------------
+				--  NULL   |   X   |   U   | --> Poligono que foi classificado e reclassificado antes de dissolver 
+				----------------------------
+				--   X     |   X   |   U   | --> Poligono que mudou de classe que já dissolvido 
+				----------------------------
+				----------------------------
+				--  NULL   |  NEW  |   U   | --> Poligono que foi classificado e reclassificado antes de dissolver 
+				----------------------------
+				--   X     |  NEW  |   U   | --> Poligono que mudou de classe que já dissolvido 
+				----------------------------
+				(SELECT NEW.object_id)
+		END;
 
 BEGIN
 
@@ -82,7 +199,6 @@ BEGIN
     RETURN NULL;
 END;
 $$;
-
 
 CREATE TRIGGER tg_func_log_monitoramento
 AFTER INSERT OR UPDATE OR DELETE 
@@ -103,7 +219,6 @@ BEGIN
 	str :=	concat(
 			'
 			-- Removendo poligonos deletados 
-			-- Este script deleta todos os poligonos (tanto os que precisaram dissolver quanto os que tem um único registro)
 			DELETE FROM monitoramento_dissolve md 
 			WHERE md.id IN (
 				SELECT DISTINCT monitoramento_dissolve_id 
@@ -181,17 +296,39 @@ SELECT processamento_dado_diario();
 --=============================================================================================================
 --                                                  DESENVOLVIMENTO
 --=============================================================================================================
+-- Esta é a lógica de como gravar os dados no log
 
+--x = inseriu/deletou na tabela
+                                        
 ---------------------------------------------------------------------
 -- monitoramento_dissolve_id |  monitoramento_object_id  | operacao |
-----------------------------------------------------------
---           NULL            |             x             |    I     | --> Poligono novo não dissolvido
 ---------------------------------------------------------------------
---           x               |            NULL           |    D     | --> Delete de poligono que foi dissolvido (não cortado por celulas ou tiles)
-----------------------------------------------------------
---            x              |             x             |    |     | --> Tratamento de poligonos que foram cortados por celulas ou tiles
-----------------------------------------------------------
-
+--           NULL            |             X             |    I     | --> Poligono inserido não dissolvido (totalmente novo).
+---------------------------------------------------------------------
+--            X              |            NULL           |    I     | --> Caso inexistente.
+---------------------------------------------------------------------
+--            X              |             X             |    I     | --> Poligono monitoramento e monitoramento_dissolvido modificado.
+---------------------------------------------------------------------
+--           NULL            |            NULL           |    I     | --> Caso inexistente. Poligono inexistente (nunca foi feito nunca pode ser dissolvido)
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+--           NULL            |             X             |    D     | --> Poligono deletado que não foi dissolvido (criou e apagou antes de dissolver)
+---------------------------------------------------------------------
+--            X              |            NULL           |    D     | --> Caso inexistente. Poligono inexistente (nunca foi feito num pode ser deletado)
+---------------------------------------------------------------------
+--            X              |             X             |    D     | --> Poligono deletado dissolvido (mas a trigger não representa esta caso na tabela log) --> Mudar a trigger do log. Não esta gravando desta maneira quando deletar (ctrl+X) em monitoramento. 
+---------------------------------------------------------------------
+--           NULL            |            NULL           |    D     | --> Caso inexistente, mas esta registrado no log atualmente. Tem um erro aqui no log.
+---------------------------------------------------------------------
+---------------------------------------------------------------------
+--           NULL            |             X             |    U     | --> Poligono que foi classificado e reclassificado antes de dissolver 
+---------------------------------------------------------------------
+--            X              |            NULL           |    U     | --> Caso inexistente 
+---------------------------------------------------------------------
+--            X              |             X             |    U     | --> Poligono que mudou de classe que já dissolvido 
+---------------------------------------------------------------------
+--           NULL            |            NULL           |    U     | --> Não faz update em poligono inexistente
+---------------------------------------------------------------------
 
 
 --=============================================================================================================
@@ -213,7 +350,6 @@ WHERE md.id IN (
 	AND operacao = 'D' 
 	AND monitoramento_object_id IS NULL
 );
- 
 
 -- Removendo as chaves primarias que quebram o codigo de insert
 --DELETE FROM monitoramento_dissolve md
@@ -227,6 +363,7 @@ WHERE md.id IN (
 	AND monitoramento_dissolve_id IS NULL --Poligono não dissolvido (novo), que não esta em dissolve
 	AND m.class_name != 'Erro_T0'
 );
+
 
 
 --=============================================================================================================
@@ -262,3 +399,14 @@ FROM (
 ) t1
 JOIN monitoramento m2 ON ST_Intersects(st_pointonsurface(m2.spatial_data), t1.geom)
 GROUP BY t1.class_name, t1.view_date, t1.geom;
+
+
+-- Poligonos que foram finalizados no dia 15
+SELECT object_id AS id, m.scene_id, spatial_data AS geom FROM monitoramento m
+JOIN terraamazon.ta_tasklog tt ON tt.task_id = m.task_id
+WHERE tt.final_time BETWEEN to_date('2023-03-14', 'YYYY-MM-DD') AND to_date('2023-03-15', 'YYYY-MM-DD') AND tt.status = 'CLOSED' AND m.class_name <> 'Erro_T0'
+GROUP BY spatial_data, object_id, scene_id;
+
+
+SELECT * FROM log_monitoramento lm 
+WHERE monitoramento_object_id = 56740;
