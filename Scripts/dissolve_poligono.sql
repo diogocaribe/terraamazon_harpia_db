@@ -316,7 +316,7 @@ SELECT processamento_dado_diario();
 ---------------------------------------------------------------------
 --            X              |            NULL           |    D     | --> Caso inexistente. Poligono inexistente (nunca foi feito num pode ser deletado)
 ---------------------------------------------------------------------
---            X              |             X             |    D     | --> Poligono deletado dissolvido (mas a trigger não representa esta caso na tabela log) --> Mudar a trigger do log. Não esta gravando desta maneira quando deletar (ctrl+X) em monitoramento. 
+--            X              |             X             |    D     | --> Poligono deletado dissolvido 
 ---------------------------------------------------------------------
 --           NULL            |            NULL           |    D     | --> Caso inexistente, mas esta registrado no log atualmente. Tem um erro aqui no log.
 ---------------------------------------------------------------------
@@ -332,38 +332,100 @@ SELECT processamento_dado_diario();
 
 
 --=============================================================================================================
---                                                  DESENVOLVIMENTO
+--                                              DESENVOLVIMENTO
+--=============================================================================================================
+--                                          O QUE FAZER PARA CADA CASO
 --=============================================================================================================
 --                                                  DELETE
 --=============================================================================================================
 
--- Tem de ser a primeira ação e deve ser seguida do Caso 1 para recolocar os poligonos que 
--- sobraram quando apagou o poligono que precisou dissolver
--- Removendo poligonos deletados 
--- Este script deleta todos os poligonos (tanto os que precisaram dissolver quanto os que tem um único registro)
+-- O que fazer Para os casos do da operação delete
+-- dissolve |monitor|
+-----------------------------
+--    NULL  |   X   |   D   | --> Poligono deletado que não foi dissolvido (criou e apagou antes de dissolver) ==> Não fazer nada
+-----------------------------
+--      X   |   X   |   D   | --> Poligono deletado dissolvido ==> Deletar o poligono em monitoramento_dissolve
+-----------------------------
+-- Deletando poligono que foi deletado e estava em monitoramento_dissolve
 --DELETE FROM monitoramento_dissolve md 
-SELECT FROM monitoramento_dissolve md 
+SELECT md.id FROM monitoramento_dissolve md 
 WHERE md.id IN (
 	SELECT DISTINCT monitoramento_dissolve_id 
 	FROM log_monitoramento lm 
 	WHERE lm.data_hora_utc::date = current_date 
 	AND operacao = 'D' 
-	AND monitoramento_object_id IS NULL
+	AND monitoramento_dissolve_id IS NOT NULL
 );
 
--- Removendo as chaves primarias que quebram o codigo de insert
---DELETE FROM monitoramento_dissolve md
-SELECT FROM monitoramento_dissolve md 
-WHERE md.id IN (
-	SELECT DISTINCT lm.monitoramento_object_id 
+--=============================================================================================================
+--                                                  INSERT
+--=============================================================================================================
+
+-- O que fazer para os casos da operação insert
+-- dissolve |monitor|
+-----------------------------
+--   NULL   |   X   |   I   | --> Poligono inserido não dissolvido (totalmente novo).
+-----------------------------
+--    X     |   X   |   I   | --> Poligono monitoramento e monitoramento_dissolvido modificado.
+-----------------------------
+
+-- 1º Caso
+-- Poligono não dissolvido e que não tem divisão de celulas ou tiles (não toca nenhum poligono com a mesma data)
+WITH a AS (
+	SELECT m.object_id, m.class_name, m.spatial_data AS geom 
 	FROM log_monitoramento lm 
-	JOIN monitoramento m ON m.object_id = lm.monitoramento_object_id
-	WHERE lm.data_hora_utc::date = current_date
+	JOIN monitoramento m ON lm.monitoramento_object_id = m.object_id
+	WHERE lm.data_hora_utc::date = current_date 
 	AND operacao = 'I' 
-	AND monitoramento_dissolve_id IS NULL --Poligono não dissolvido (novo), que não esta em dissolve
-	AND m.class_name != 'Erro_T0'
-);
+	AND monitoramento_dissolve_id IS NULL
+)
+SELECT m2.object_id, m2.class_name, ts.view_date, m2.spatial_data AS geom 
+FROM (
+	SELECT * FROM a 
+	WHERE a.object_id NOT IN (
+		SELECT a.object_id
+		FROM a, a b
+		WHERE a.object_id <> b.object_id
+		AND st_intersects(a.geom, b.geom) IS TRUE
+	)
+) t
+JOIN monitoramento m2 ON t.object_id = m2.object_id
+JOIN terraamazon.ta_scene ts ON m2.scene_id = ts.id;
 
+
+-- Poligono não dissolvido e que tem divisão de celulas ou tiles (tocam poligonos com a mesma data)
+WITH a AS (
+	SELECT m.object_id, m.class_name, m.spatial_data AS geom 
+	FROM log_monitoramento lm 
+	JOIN monitoramento m ON lm.monitoramento_object_id = m.object_id
+	WHERE lm.data_hora_utc::date = current_date 
+	AND operacao = 'I' 
+	AND monitoramento_dissolve_id IS NULL
+)
+SELECT (select unnest(array_agg(m3.object_id)) as id_array2 order by id_array2 limit 1) AS id, 
+	t2.class_name, view_date, 	round((st_area(st_transform(geom, 55555))/10000)::NUMERIC, 2) AS area_ha, geom
+FROM (
+	SELECT t1.class_name, t1.view_date, (st_dump((st_buffer(st_union(t1.geom), 0.00000000001, 'join=mitre')))).geom AS geom
+	FROM (
+		SELECT m2.object_id, m2.class_name, ts.view_date, m2.spatial_data AS geom FROM (
+			SELECT DISTINCT a.object_id
+			FROM a, a b
+			WHERE a.object_id < b.object_id
+			AND ST_INTERSECTS(a.geom, b.geom)
+			UNION
+			SELECT DISTINCT b.object_id
+			FROM a, a b
+			WHERE a.object_id < b.object_id
+			AND ST_INTERSECTS(a.geom, b.geom)
+		) t
+		JOIN monitoramento m2 ON t.object_id = m2.object_id
+		JOIN terraamazon.ta_scene ts ON m2.scene_id = ts.id
+	) t1
+	GROUP BY t1.class_name, t1.view_date
+) t2
+JOIN monitoramento m3 ON ST_Intersects(st_pointonsurface(m3.spatial_data), t2.geom)
+GROUP BY t2.class_name, t2.view_date, t2.geom;
+;
 
 
 --=============================================================================================================
@@ -406,7 +468,3 @@ SELECT object_id AS id, m.scene_id, spatial_data AS geom FROM monitoramento m
 JOIN terraamazon.ta_tasklog tt ON tt.task_id = m.task_id
 WHERE tt.final_time BETWEEN to_date('2023-03-14', 'YYYY-MM-DD') AND to_date('2023-03-15', 'YYYY-MM-DD') AND tt.status = 'CLOSED' AND m.class_name <> 'Erro_T0'
 GROUP BY spatial_data, object_id, scene_id;
-
-
-SELECT * FROM log_monitoramento lm 
-WHERE monitoramento_object_id = 56740;
