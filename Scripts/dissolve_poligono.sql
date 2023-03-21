@@ -364,15 +364,15 @@ WHERE md.id IN (
 -- O que fazer para os casos da operação insert
 -- dissolve |monitor|
 -----------------------------
---   NULL   |   X   |   I   | --> Poligono inserido não dissolvido (totalmente novo).
+--   NULL   |   X   |   I   | --> Poligono inserido não dissolvido (totalmente novo). 1º Caso
 -----------------------------
 --    X     |   X   |   I   | --> Poligono monitoramento e monitoramento_dissolvido modificado.
 -----------------------------
 
--- 1º Caso
+-- 1º Caso (primeiro tratamento)
 -- Poligono não dissolvido e que não tem divisão de celulas ou tiles (não toca nenhum poligono com a mesma data)
 WITH a AS (
-	SELECT m.object_id, m.class_name, m.spatial_data AS geom 
+	SELECT m.object_id, m.class_name, m.spatial_data AS geom, m.scene_id 
 	FROM log_monitoramento lm 
 	JOIN monitoramento m ON lm.monitoramento_object_id = m.object_id
 	WHERE lm.data_hora_utc::date = current_date 
@@ -381,21 +381,54 @@ WITH a AS (
 )
 SELECT m2.object_id, m2.class_name, ts.view_date, m2.spatial_data AS geom 
 FROM (
-	SELECT * FROM a 
+	SELECT object_id, class_name, geom, scene_id FROM a 
 	WHERE a.object_id NOT IN (
-		SELECT a.object_id
-		FROM a, a b
-		WHERE a.object_id <> b.object_id
-		AND st_intersects(a.geom, b.geom) IS TRUE
+		SELECT DISTINCT object_id
+		FROM (
+			SELECT  
+				a_object_id AS object_id, b_object_id, 
+				a_scene_id, b_scene_id, 
+				ts.view_date AS a_view_date, ts1.view_date AS b_view_date
+			FROM (
+				SELECT a.object_id AS a_object_id, b.object_id AS b_object_id, a.scene_id AS a_scene_id, b.scene_id AS b_scene_id
+				FROM a, a b
+				WHERE a.object_id < b.object_id
+				AND ST_INTERSECTS(a.geom, b.geom)
+			) i
+			JOIN terraamazon.ta_scene ts ON i.a_scene_id = ts.id
+			JOIN terraamazon.ta_scene ts1 ON i.b_scene_id = ts1.id
+			-- Somente para as mesmas datas
+			WHERE ts.view_date = ts1.view_date 
+		) i1
+		UNION
+		SELECT DISTINCT object_id
+		FROM (
+			SELECT  
+				a_object_id, b_object_id AS object_id,
+				a_scene_id, b_scene_id, 
+				ts.view_date AS a_view_date, ts1.view_date AS b_view_date
+			FROM (
+				SELECT a.object_id AS a_object_id, b.object_id AS b_object_id, a.scene_id AS a_scene_id, b.scene_id AS b_scene_id
+				FROM a, a b
+				WHERE a.object_id < b.object_id
+				AND ST_INTERSECTS(a.geom, b.geom)
+			) i
+			JOIN terraamazon.ta_scene ts ON i.a_scene_id = ts.id
+			JOIN terraamazon.ta_scene ts1 ON i.b_scene_id = ts1.id
+			-- Somente para as mesmas datas
+			WHERE ts.view_date = ts1.view_date 
+		) i1
 	)
 ) t
 JOIN monitoramento m2 ON t.object_id = m2.object_id
 JOIN terraamazon.ta_scene ts ON m2.scene_id = ts.id;
 
 
+-- 1º Caso (segundo tratamento)
+--Versão que verifica se AS datas são iguais
 -- Poligono não dissolvido e que tem divisão de celulas ou tiles (tocam poligonos com a mesma data)
 WITH a AS (
-	SELECT m.object_id, m.class_name, m.spatial_data AS geom 
+	SELECT m.object_id, m.class_name, m.spatial_data AS geom, m.scene_id 
 	FROM log_monitoramento lm 
 	JOIN monitoramento m ON lm.monitoramento_object_id = m.object_id
 	WHERE lm.data_hora_utc::date = current_date 
@@ -407,60 +440,51 @@ SELECT (select unnest(array_agg(m3.object_id)) as id_array2 order by id_array2 l
 FROM (
 	SELECT t1.class_name, t1.view_date, (st_dump((st_buffer(st_union(t1.geom), 0.00000000001, 'join=mitre')))).geom AS geom
 	FROM (
-		SELECT m2.object_id, m2.class_name, ts.view_date, m2.spatial_data AS geom FROM (
-			SELECT DISTINCT a.object_id
-			FROM a, a b
-			WHERE a.object_id < b.object_id
-			AND ST_INTERSECTS(a.geom, b.geom)
+		SELECT m.object_id, m.class_name, view_date, m.spatial_data AS geom 
+		FROM (
+			SELECT DISTINCT object_id
+			FROM (
+				SELECT  
+					a_object_id AS object_id, b_object_id, 
+					a_scene_id, b_scene_id, 
+					ts.view_date AS a_view_date, ts1.view_date AS b_view_date
+				FROM (
+					SELECT a.object_id AS a_object_id, b.object_id AS b_object_id, a.scene_id AS a_scene_id, b.scene_id AS b_scene_id
+					FROM a, a b
+					WHERE a.object_id < b.object_id
+					AND ST_INTERSECTS(a.geom, b.geom)
+				) i
+				JOIN terraamazon.ta_scene ts ON i.a_scene_id = ts.id
+				JOIN terraamazon.ta_scene ts1 ON i.b_scene_id = ts1.id
+				-- Somente para as mesmas datas
+				WHERE ts.view_date = ts1.view_date 
+			) i1
 			UNION
-			SELECT DISTINCT b.object_id
-			FROM a, a b
-			WHERE a.object_id < b.object_id
-			AND ST_INTERSECTS(a.geom, b.geom)
+			SELECT DISTINCT object_id
+			FROM (
+				SELECT  
+					a_object_id, b_object_id AS object_id,
+					a_scene_id, b_scene_id, 
+					ts.view_date AS a_view_date, ts1.view_date AS b_view_date
+				FROM (
+					SELECT a.object_id AS a_object_id, b.object_id AS b_object_id, a.scene_id AS a_scene_id, b.scene_id AS b_scene_id
+					FROM a, a b
+					WHERE a.object_id < b.object_id
+					AND ST_INTERSECTS(a.geom, b.geom)
+				) i
+				JOIN terraamazon.ta_scene ts ON i.a_scene_id = ts.id
+				JOIN terraamazon.ta_scene ts1 ON i.b_scene_id = ts1.id
+				-- Somente para as mesmas datas
+				WHERE ts.view_date = ts1.view_date 
+			) i1
 		) t
-		JOIN monitoramento m2 ON t.object_id = m2.object_id
-		JOIN terraamazon.ta_scene ts ON m2.scene_id = ts.id
+		JOIN monitoramento m ON t.object_id = m.object_id
+		JOIN terraamazon.ta_scene ts ON m.scene_id = ts.id
 	) t1
 	GROUP BY t1.class_name, t1.view_date
 ) t2
 JOIN monitoramento m3 ON ST_Intersects(st_pointonsurface(m3.spatial_data), t2.geom)
 GROUP BY t2.class_name, t2.view_date, t2.geom;
-;
-
-
---=============================================================================================================
---                                            DISSOLVE
---=============================================================================================================
-
--- Fazendo o dissolve dos poligonos que foram modificados no dia
---INSERT INTO monitoramento_dissolve (id, class_name, view_date, area_ha, geom)
-SELECT (select unnest(array_agg(m2.object_id)) as id_array2 order by id_array2 limit 1) AS id, 
-	t1.class_name, view_date, 	round((st_area(st_transform(geom, 55555))/10000)::NUMERIC, 2) AS area_ha, geom
-FROM (
-	SELECT class_name, view_date, (st_dump((st_buffer(st_union(spatial_data), 0.0000001, 'join=mitre')))).geom AS geom
-	FROM (
-		SELECT m.class_name, ts.view_date, m.spatial_data 
-		FROM log_monitoramento lm 
-		JOIN monitoramento m ON m.object_id = lm.monitoramento_object_id
-		JOIN terraamazon.ta_scene ts ON ts.id = m.scene_id
-		WHERE lm.data_hora_utc::date = current_date
-			AND operacao = 'I' 
-			AND monitoramento_dissolve_id IS NOT NULL --Poligono não dissolvido (novo), dividido pela celula ou tile que não esta em dissolve
-			AND m.class_name != 'Erro_T0'
-		UNION 
-		SELECT m.class_name, ts.view_date, m.spatial_data
-		FROM log_monitoramento lm 
-		JOIN monitoramento m ON m.object_id = lm.monitoramento_object_id
-		JOIN terraamazon.ta_scene ts ON ts.id = m.scene_id
-		WHERE lm.data_hora_utc::date = current_date 
-			AND operacao = 'I' 
-			AND monitoramento_dissolve_id IS NULL --Poligono não dissolvido (novo), que não esta em dissolve
-			AND m.class_name != 'Erro_T0'
-	) t
-	GROUP BY class_name, view_date
-) t1
-JOIN monitoramento m2 ON ST_Intersects(st_pointonsurface(m2.spatial_data), t1.geom)
-GROUP BY t1.class_name, t1.view_date, t1.geom;
 
 
 -- Poligonos que foram finalizados no dia 15
