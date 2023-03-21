@@ -499,11 +499,6 @@ GROUP BY t2.class_name, t2.view_date, t2.geom;
 
 UPDATE monitoramento_dissolve
 SET class_name = 'Desmatamento'
-WHERE object_id IN ( 
-19439, 46686);
-
-UPDATE monitoramento_dissolve
-SET class_name = 'Desmatamento'
 WHERE id IN (
 	SELECT md.id FROM monitoramento_dissolve md 
 	WHERE md.id IN (
