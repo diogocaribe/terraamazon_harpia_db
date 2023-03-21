@@ -487,6 +487,39 @@ JOIN monitoramento m3 ON ST_Intersects(st_pointonsurface(m3.spatial_data), t2.ge
 GROUP BY t2.class_name, t2.view_date, t2.geom;
 
 
+--=============================================================================================================
+--                                                  UPDATE
+--=============================================================================================================
+-- dissolve|monitor|
+----------------------------
+--  NULL   |   X   |   U   | --> Poligono que foi classificado e reclassificado antes de dissolver 
+----------------------------
+--   X     |   X   |   U   | --> Poligono que mudou de classe que já dissolvido
+----------------------------
+
+UPDATE monitoramento_dissolve
+SET class_name = 'Desmatamento'
+WHERE object_id IN ( 
+19439, 46686);
+
+UPDATE monitoramento_dissolve
+SET class_name = 'Desmatamento'
+WHERE id IN (
+	SELECT md.id FROM monitoramento_dissolve md 
+	WHERE md.id IN (
+		SELECT DISTINCT monitoramento_dissolve_id 
+		FROM log_monitoramento lm 
+		WHERE lm.data_hora_utc::date = current_date 
+		AND operacao = 'U' 
+		AND monitoramento_dissolve_id IS NOT NULL
+	)
+);
+
+
+--=============================================================================================================
+--                                                  Qgis
+--=============================================================================================================
+-- Consulta para verificar se os poligonos foram processados corretamente
 -- Poligonos que foram finalizados no dia 15
 SELECT object_id AS id, m.scene_id, spatial_data AS geom FROM monitoramento m
 JOIN terraamazon.ta_tasklog tt ON tt.task_id = m.task_id
