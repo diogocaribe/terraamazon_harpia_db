@@ -426,7 +426,7 @@ BEGIN
 			
 			
 			-- Inserir os dados processados em monitoramento dissolve
-			INSERT INTO tmp_processamento_dissolve (id, class_name, view_date, area_ha, geom)
+			INSERT INTO monitoramento_dissolve (id, class_name, view_date, area_ha, geom)
 			SELECT id, class_name, view_date, area_ha, geom FROM tmp_processamento_dissolve;
 			
 			-- Realizar o update do que mudou
@@ -972,7 +972,6 @@ JOIN monitoramento m3 ON ST_Intersects(st_pointonsurface(m3.spatial_data), t2.ge
 GROUP BY t2.class_name, t2.view_date, t2.geom;
 
 
-
 --=============================================================================================================
 --                                                  UPDATE
 --=============================================================================================================
@@ -1006,12 +1005,12 @@ WHERE md.id = s.id;
 
 -- criar tabela tmp como: processamento_dissolve
 -- Criando a tabela temporaria a partir dos dados dos INSERT (com e sem divisão por tile e celulas)
-CREATE TEMP TABLE tmp_processamento_dissolve AS 
+CREATE TEMPORARY TABLE tmp_processamento_dissolve AS 
 WITH a AS (
 	SELECT m.object_id, m.class_name, m.spatial_data AS geom, m.scene_id 
 	FROM log_monitoramento lm 
 	JOIN monitoramento m ON lm.monitoramento_object_id = m.object_id
-	WHERE lm.data_hora_utc::date = current_date 
+	WHERE lm.data_hora_utc::date = to_date('2023-03-27', 'YYYY-MM-DD') --current_date 
 	AND operacao = 'I'
 	-- Condição que restringe esse processamento aos poligonos que não foram dissolvidos
 	AND monitoramento_dissolve_id IS NULL
@@ -1120,7 +1119,7 @@ WITH b AS (
 		SELECT m.object_id, m.class_name, m.spatial_data AS geom, m.scene_id 
 		FROM log_monitoramento lm 
 		JOIN monitoramento m ON lm.monitoramento_object_id = m.object_id
-		WHERE lm.data_hora_utc::date = current_date 
+		WHERE lm.data_hora_utc::date = to_date('2023-03-27', 'YYYY-MM-DD')--current_date 
 		AND operacao = 'I'
 		-- Condição que restringe esse processamento aos poligonos que não foram dissolvidos
 		AND monitoramento_dissolve_id IS NOT NULL
@@ -1196,18 +1195,18 @@ GROUP BY t2.class_name, t2.view_date, t2.geom;
 
 
 -- Deletar todos os ids de monitoramento dissolve que tiveram modificações
-DELETE FROM monitoramento_dissolve md  
+DELETE FROM monitoramento_dissolve md
 WHERE md.id IN (
 	SELECT DISTINCT monitoramento_dissolve_id 
 	FROM log_monitoramento lm 
-	WHERE lm.data_hora_utc::date = current_date 
+	WHERE lm.data_hora_utc::date = to_date('2023-03-27', 'YYYY-MM-DD') --current_date 
 	AND operacao = 'D' 
-	AND monitoramento_dissolve_id IS NOT NULL)
-;
+	AND monitoramento_dissolve_id IS NOT NULL
+);
 
 
 -- Inserir os dados processados em monitoramento dissolve
-INSERT INTO tmp_processamento_dissolve (id, class_name, view_date, area_ha, geom)
+INSERT INTO monitoramento_dissolve (id, class_name, view_date, area_ha, geom)
 SELECT id, class_name, view_date, area_ha, geom FROM tmp_processamento_dissolve;
 
 -- Realizar o update do que mudou
@@ -1226,6 +1225,7 @@ FROM (
 ) AS s (id, class_name)
 WHERE md.id = s.id;
 
+
 --=============================================================================================================
 --                                                  Qgis
 --=============================================================================================================
@@ -1233,5 +1233,5 @@ WHERE md.id = s.id;
 -- Poligonos que foram finalizados no dia 15
 SELECT object_id AS id, m.scene_id, spatial_data AS geom FROM monitoramento m
 JOIN log_monitoramento lm ON lm.monitoramento_object_id = m.object_id
-WHERE lm.data_hora_utc BETWEEN to_date('2023-03-23', 'YYYY-MM-DD') AND to_date('2023-03-24', 'YYYY-MM-DD') 
+WHERE lm.data_hora_utc::date = to_date('2023-03-24', 'YYYY-MM-DD')  AND m.class_name 
 
