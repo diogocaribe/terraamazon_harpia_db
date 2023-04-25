@@ -427,7 +427,8 @@ BEGIN
 			
 			-- Inserir os dados processados em monitoramento dissolve
 			INSERT INTO monitoramento_dissolve (id, class_name, view_date, area_ha, geom)
-			SELECT id, class_name, view_date, area_ha, geom FROM tmp_processamento_dissolve;
+			SELECT id, class_name, view_date, area_ha, geom FROM tmp_processamento_dissolve
+			WHERE class_name <> ''Erro_T0'';
 			
 			-- Realizar o update do que mudou
 			UPDATE monitoramento_dissolve md
@@ -1234,4 +1235,64 @@ WHERE md.id = s.id;
 SELECT object_id AS id, m.scene_id, spatial_data AS geom FROM monitoramento m
 JOIN log_monitoramento lm ON lm.monitoramento_object_id = m.object_id
 WHERE lm.data_hora_utc::date = to_date('2023-03-24', 'YYYY-MM-DD')  AND m.class_name 
+
+
+-- Organizando os ids da monitoramento dissolve
+
+ALTER TABLE monitoramento_dissolve DROP CONSTRAINT monitoramento_dissolve_pkey;
+
+-- Fazendo a correção dos ids de monitoramento dissolve
+-- Esse codigo tem de ser executado antes dos interpretes iniciarem a a edição de manhã
+UPDATE monitoramento_dissolve md
+SET id = s.max_objetct_id
+FROM (
+	SELECT (SELECT min(a) FROM UNNEST(array_agg(m.object_id)) AS a) AS max_object_id, md.geom
+	FROM monitoramento_dissolve md 
+	JOIN monitoramento m ON st_intersects(st_pointonsurface(m.spatial_data), md.geom)
+	GROUP BY md.geom
+) AS s (max_objetct_id, geom)
+WHERE md.geom = s.geom
+
+
+ALTER TABLE monitoramento_dissolve ADD PRIMARY KEY (id);
+
+
+
+--CREATE INDEX monitoramento_dissolve_idx_view_date ON monitoramento_dissolve (view_date);
+
+CREATE INDEX monitoramento_dissolve_idx_class_name ON public.monitoramento_dissolve USING btree (class_name);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
